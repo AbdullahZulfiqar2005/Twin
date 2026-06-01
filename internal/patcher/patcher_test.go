@@ -2,15 +2,24 @@ package patcher
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestApply_PreservesPermissionsAndReplaces(t *testing.T) {
 	dir := t.TempDir()
-	filePath := filepath.Join(dir, "test.txt")
 
+	// Switch CWD to temp directory so that securePath accepts it
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current working directory: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+	defer os.Chdir(oldCwd)
+
+	filePath := "test.txt"
 	originalContent := "line 1\nline 2: target_to_replace\nline 3"
 	expectedContent := "line 1\nline 2: substituted_value\nline 3"
 
@@ -21,7 +30,7 @@ func TestApply_PreservesPermissionsAndReplaces(t *testing.T) {
 	}
 
 	// Apply patch
-	err := Apply(filePath, "target_to_replace", "substituted_value")
+	err = Apply(filePath, "target_to_replace", "substituted_value")
 	if err != nil {
 		t.Fatalf("Apply failed: %v", err)
 	}
@@ -48,14 +57,24 @@ func TestApply_PreservesPermissionsAndReplaces(t *testing.T) {
 
 func TestApply_SearchBlockNotFound(t *testing.T) {
 	dir := t.TempDir()
-	filePath := filepath.Join(dir, "test.txt")
 
+	// Switch CWD to temp directory so that securePath accepts it
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current working directory: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+	defer os.Chdir(oldCwd)
+
+	filePath := "test.txt"
 	content := "hello world"
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
 
-	err := Apply(filePath, "non_existent_string", "replacement")
+	err = Apply(filePath, "non_existent_string", "replacement")
 	if err == nil {
 		t.Fatal("expected error when search block is not found, got nil")
 	}

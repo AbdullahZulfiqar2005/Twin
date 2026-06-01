@@ -2,7 +2,6 @@ package context
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -147,7 +146,17 @@ func TestWindow_ZeroLine(t *testing.T) {
 func TestExtract_ReadsRealFile(t *testing.T) {
 	// Write a small fake C source file to a temp directory.
 	dir := t.TempDir()
-	srcPath := filepath.Join(dir, "main.c")
+
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current working directory: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+	defer os.Chdir(oldCwd)
+
+	srcPath := "main.c"
 	src := `#include <stdio.h>
 int main() {
     x = 1; // error: x undeclared

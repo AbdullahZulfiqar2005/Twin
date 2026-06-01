@@ -7,6 +7,7 @@ package context
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -145,7 +146,13 @@ func readSnippets(refs []FileRef) map[string]string {
 			continue
 		}
 
-		content, err := os.ReadFile(ref.Path)
+		resolvedPath, err := securePath(ref.Path)
+		if err != nil {
+			// Skip files that attempt path traversal
+			continue
+		}
+
+		content, err := os.ReadFile(resolvedPath)
 		if err != nil {
 			// File may be a system header or outside the project — skip quietly.
 			continue
@@ -213,4 +220,36 @@ func dedup(refs []FileRef) []FileRef {
 	}
 
 	return out
+}
+
+// securePath validates that `filePath` is strictly within the current working directory
+// and returns the resolved absolute path. This prevents path traversal attacks.
+func securePath(filePath string) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve absolute path for %s: %w", filePath, err)
+	}
+
+	absCwd, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve absolute working directory: %w", err)
+	}
+
+	// Relativize the path to ensure it starts inside CWD and does not escape it
+	rel, err := filepath.Rel(absCwd, absPath)
+	if err != nil {
+		return "", fmt.Errorf("path validation failed for %s: %w", filePath, err)
+	}
+
+	// If the relative path starts with ".." or is absolute (meaning it escaped), it is out of bounds!
+	if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("security violation: path %s escapes the active workspace directory", filePath)
+	}
+
+	return absPath, nil
 }
