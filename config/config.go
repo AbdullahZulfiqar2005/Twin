@@ -93,9 +93,9 @@ func Save(cfg *Config) error {
 		return err
 	}
 
-	// Create directories if they do not exist
+	// Create directories if they do not exist (0700 restricts access to the owner only)
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("config: failed to create directories: %w", err)
 	}
 
@@ -104,7 +104,8 @@ func Save(cfg *Config) error {
 		return fmt.Errorf("config: failed to marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(path, content, 0644); err != nil {
+	// Write file with 0600 permissions so it is only readable/writable by the owner
+	if err := os.WriteFile(path, content, 0600); err != nil {
 		return fmt.Errorf("config: failed to write file: %w", err)
 	}
 

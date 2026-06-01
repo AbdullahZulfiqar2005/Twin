@@ -14,6 +14,7 @@ import (
 	"twin/internal/interceptor"
 	"twin/internal/llm"
 	"twin/internal/patcher"
+	"twin/internal/sandbox"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -36,7 +37,7 @@ type fileBackup struct {
 
 // Model represents the Bubble Tea application state machine.
 type Model struct {
-	mu sync.Mutex
+	mu *sync.Mutex
 
 	// Configuration & CLI context
 	cfg           *config.Config
@@ -59,6 +60,11 @@ type Model struct {
 	// Exposed properties for main.go to read upon termination
 	Success  bool
 	ExitCode int
+
+	// Docker Sandbox trial run properties
+	sandboxChecking  bool
+	sandboxAvailable bool
+	sandboxResult    *sandbox.SandboxResult
 
 	// Components
 	spinner spinner.Model
@@ -115,6 +121,19 @@ var (
 	footerStyle = lipgloss.NewStyle().
 			Foreground(slateColor).
 			MarginTop(1)
+
+	warningBannerStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#FFFFFF")).
+				Background(lipgloss.Color("#DC2626")). // Red-600
+				Padding(0, 2).
+				MarginBottom(1)
+
+	warningBoxStyle = lipgloss.NewStyle().
+			Padding(1, 2).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#EF4444")). // Red-500
+			MarginBottom(1)
 )
 
 // NewModel instantiates the self-healing TUI.
@@ -129,6 +148,7 @@ func NewModel(cfg *config.Config, cmd string, args []string, initialResult *exec
 	s.Style = lipgloss.NewStyle().Foreground(purpleColor)
 
 	return Model{
+		mu:            &sync.Mutex{},
 		cfg:           cfg,
 		cmd:           cmd,
 		args:          args,
@@ -162,7 +182,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.state == stateConfirming {
 			switch msg.String() {
-			case "y", "enter":
+			case "y":
+				m.state = stateApplying
+				return m, tea.Batch(m.spinner.Tick, m.applyAndReRun())
+			case "enter":
+				if m.fix != nil && m.fix.IsCommand {
+					// Enter is disabled for shell commands for safety
+					return m, nil
+				}
 				m.state = stateApplying
 				return m, tea.Batch(m.spinner.Tick, m.applyAndReRun())
 			case "n", "q":
@@ -185,6 +212,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case llmSuccessMsg:
 		m.fix = msg.fix
 		m.state = stateConfirming
+		m.sandboxChecking = true
+		m.sandboxAvailable = sandbox.IsDockerAvailable()
+		m.sandboxResult = nil
+
+		if m.sandboxAvailable {
+			event := interceptor.Intercept(m.currentResult)
+			var kind interceptor.FailureKind = interceptor.KindUnknown
+			if event != nil {
+				kind = event.Kind
+			}
+			return m, m.runSandboxVerification(kind)
+		}
+		return m, nil
+
+	case sandboxFinishedMsg:
+		m.sandboxChecking = false
+		if msg.err != nil {
+			m.sandboxAvailable = false
+		} else {
+			m.sandboxResult = msg.result
+		}
 		return m, nil
 
 	case llmErrorMsg:
@@ -260,11 +308,22 @@ func (m Model) View() string {
 		b.WriteString(explanationStyle.Render("💡 "+m.fix.Explanation) + "\n\n")
 
 		if m.fix.IsCommand {
-			cmdBox := boxStyle.BorderForeground(purpleColor).Render(
-				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Render("$ ") +
-					lipgloss.NewStyle().Foreground(greenColor).Render(m.fix.Command),
-			)
-			b.WriteString(cmdBox + "\n")
+			isHigh, reason := isHighRiskCommand(m.fix.Command)
+			if isHigh {
+				b.WriteString(warningBannerStyle.Render("⚠️ WARNING: HIGH RISK COMMAND DETECTED") + "\n")
+				b.WriteString(lipgloss.NewStyle().Foreground(redColor).Italic(true).Render("Reason: "+reason) + "\n\n")
+				cmdBox := warningBoxStyle.Render(
+					lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Render("$ ") +
+						lipgloss.NewStyle().Foreground(redColor).Render(m.fix.Command),
+				)
+				b.WriteString(cmdBox + "\n")
+			} else {
+				cmdBox := boxStyle.BorderForeground(purpleColor).Render(
+					lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Render("$ ") +
+						lipgloss.NewStyle().Foreground(greenColor).Render(m.fix.Command),
+				)
+				b.WriteString(cmdBox + "\n")
+			}
 		} else {
 			for i, p := range m.fix.Patches {
 				b.WriteString(fmt.Sprintf(" Patch %d of %d: %s\n", i+1, len(m.fix.Patches), lipgloss.NewStyle().Foreground(purpleColor).Render(p.FilePath)))
@@ -272,7 +331,41 @@ func (m Model) View() string {
 			}
 		}
 
-		b.WriteString("\n" + lipgloss.NewStyle().Bold(true).Render(" [y/enter] Apply Fix   [n/q] Decline & Exit") + "\n")
+		// Render Docker Sandbox status
+		if m.sandboxAvailable {
+			b.WriteString("\n")
+			if m.sandboxChecking {
+				b.WriteString(lipgloss.NewStyle().Foreground(purpleColor).Render(" 🔄 Docker Sandbox: Running trial build inside sandbox container...") + "\n")
+			} else if m.sandboxResult != nil {
+				if m.sandboxResult.Success {
+					b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(greenColor).Render(" ✅ Docker Sandbox: SUCCESS! Fix compiled and verified successfully inside container.") + "\n")
+					b.WriteString(lipgloss.NewStyle().Foreground(grayColor).Italic(true).Render("   Info: "+m.sandboxResult.Info) + "\n")
+				} else {
+					b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(redColor).Render(" ⚠️ Docker Sandbox: TRIAL BUILD FAILED inside sandbox!") + "\n")
+					b.WriteString(lipgloss.NewStyle().Foreground(grayColor).Italic(true).Render("   Info: "+m.sandboxResult.Info) + "\n")
+					// Display trial compiler error if any
+					if len(m.sandboxResult.Stderr) > 0 {
+						stderrBox := boxStyle.BorderForeground(redColor).Padding(0, 1).Render(
+							lipgloss.NewStyle().Foreground(lipgloss.Color("#FDA4AF")).Render(strings.TrimSpace(m.sandboxResult.Stderr)),
+						)
+						b.WriteString(stderrBox + "\n")
+					}
+				}
+			}
+		} else {
+			b.WriteString("\n" + lipgloss.NewStyle().Foreground(slateColor).Render(" ℹ️ Docker Sandbox: Inactive (Docker daemon is not running on host system)") + "\n")
+		}
+
+		if m.fix.IsCommand {
+			isHigh, _ := isHighRiskCommand(m.fix.Command)
+			if isHigh {
+				b.WriteString("\n" + lipgloss.NewStyle().Bold(true).Render(" [y] Confirm & Run High-Risk Command   [n/q] Decline & Exit  (Enter disabled)") + "\n")
+			} else {
+				b.WriteString("\n" + lipgloss.NewStyle().Bold(true).Render(" [y] Confirm & Run Command             [n/q] Decline & Exit  (Enter disabled)") + "\n")
+			}
+		} else {
+			b.WriteString("\n" + lipgloss.NewStyle().Bold(true).Render(" [y/enter] Apply Fix                   [n/q] Decline & Exit") + "\n")
+		}
 
 	case stateApplying:
 		b.WriteString(fmt.Sprintf(" %s Applying patches and verifying command...\n\n", m.spinner.View()))
@@ -302,6 +395,18 @@ type llmSuccessMsg struct{ fix *llm.Fix }
 type llmErrorMsg struct{ err error }
 type runSuccessMsg struct{ result *executor.Result }
 type runErrorMsg struct{ err error }
+
+type sandboxFinishedMsg struct {
+	result *sandbox.SandboxResult
+	err    error
+}
+
+func (m *Model) runSandboxVerification(kind interceptor.FailureKind) tea.Cmd {
+	return func() tea.Msg {
+		res, err := sandbox.VerifyFix(m.cmd, m.args, kind, m.fix)
+		return sandboxFinishedMsg{result: res, err: err}
+	}
+}
 
 func (m *Model) askLLM() tea.Cmd {
 	return func() tea.Msg {
@@ -438,4 +543,46 @@ func renderDiff(p llm.Patch, terminalWidth int) string {
 		Render(propTitle + "\n" + propContent)
 
 	return origBox + "\n" + propBox
+}
+
+// isHighRiskCommand checks if a shell command contains potentially dangerous operations.
+func isHighRiskCommand(command string) (bool, string) {
+	c := strings.ToLower(command)
+
+	// Helper to check word boundaries or subshell/pipeline usage
+	containsWord := func(word string) bool {
+		return strings.Contains(c, " "+word+" ") ||
+			strings.HasPrefix(c, word+" ") ||
+			strings.HasSuffix(c, " "+word) ||
+			c == word ||
+			strings.Contains(c, ";"+word) ||
+			strings.Contains(c, "|"+word) ||
+			strings.Contains(c, "&"+word)
+	}
+
+	if containsWord("sudo") || containsWord("su") {
+		return true, "System-level administrative access (sudo/su)"
+	}
+	if containsWord("rm") || containsWord("rmdir") || containsWord("shred") {
+		return true, "File/directory deletion command"
+	}
+	if containsWord("dd") || containsWord("mkfs") || containsWord("wipefs") {
+		return true, "Low-level disk/partition modification"
+	}
+	if containsWord("chmod") || containsWord("chown") || containsWord("chgrp") {
+		return true, "File permission/ownership modification"
+	}
+	if strings.Contains(c, "curl") || strings.Contains(c, "wget") {
+		if strings.Contains(c, "|") && (strings.Contains(c, "sh") || strings.Contains(c, "bash") || strings.Contains(c, "eval")) {
+			return true, "Downloading and piping directly to a shell"
+		}
+	}
+	if containsWord("nc") || containsWord("netcat") || containsWord("ncat") {
+		return true, "Network socket communication"
+	}
+	if containsWord("systemctl") || containsWord("reboot") || containsWord("shutdown") {
+		return true, "System control/state modification"
+	}
+
+	return false, ""
 }

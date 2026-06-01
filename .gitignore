@@ -14,3 +14,7 @@
 # Operating system files
 .DS_Store
 Thumbs.db
+
+# Sandbox directories
+.twin_sandbox/
+
