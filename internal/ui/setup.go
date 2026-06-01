@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/AbdullahZulfiqar2005/twin/config"
+	"twin/config"
 )
 
 // RunSetup runs an interactive command-line wizard to configure twin.

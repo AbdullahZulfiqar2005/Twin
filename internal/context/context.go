@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/AbdullahZulfiqar2005/twin/internal/interceptor"
+	"twin/internal/interceptor"
 )
 
 // contextLines is the number of lines to include above and below an error line.

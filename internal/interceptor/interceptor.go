@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/AbdullahZulfiqar2005/twin/internal/executor"
+	"twin/internal/executor"
 )
 
 // FailureKind classifies the type of error twin observed.

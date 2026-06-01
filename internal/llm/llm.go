@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AbdullahZulfiqar2005/twin/config"
+	"twin/config"
 )
 
 // Patch represents a single text substitution in a file.

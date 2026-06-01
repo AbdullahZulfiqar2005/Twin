@@ -5,9 +5,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/AbdullahZulfiqar2005/twin/config"
-	"github.com/AbdullahZulfiqar2005/twin/internal/executor"
-	"github.com/AbdullahZulfiqar2005/twin/internal/ui"
+	"twin/config"
+	"twin/internal/executor"
+	"twin/internal/ui"
 	tea "github.com/charmbracelet/bubbletea"
 )
 

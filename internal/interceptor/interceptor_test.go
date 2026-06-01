@@ -3,7 +3,7 @@ package interceptor
 import (
 	"testing"
 
-	"github.com/AbdullahZulfiqar2005/twin/internal/executor"
+	"twin/internal/executor"
 )
 
 // ── classify() ────────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-module github.com/AbdullahZulfiqar2005/twin
+module twin
 
 go 1.24.2
 

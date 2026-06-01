@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AbdullahZulfiqar2005/twin/internal/interceptor"
+	"twin/internal/interceptor"
 )
 
 // ── parseWithRegex ────────────────────────────────────────────────────────────
