@@ -184,6 +184,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "y":
 				m.state = stateApplying
+				if m.fix != nil && m.fix.IsCommand {
+					// Suspend TUI and run the command interactively in the terminal
+					shellCmd := exec.Command("/bin/sh", "-c", m.fix.Command)
+					return m, tea.ExecProcess(shellCmd, func(err error) tea.Msg {
+						return setupCommandFinishedMsg{err: err}
+					})
+				}
 				return m, tea.Batch(m.spinner.Tick, m.applyAndReRun())
 			case "enter":
 				if m.fix != nil && m.fix.IsCommand {
@@ -234,6 +241,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sandboxResult = msg.result
 		}
 		return m, nil
+
+	case setupCommandFinishedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateFailure
+			m.rollbackAll()
+			m.ExitCode = 1
+			return m, tea.Quit
+		}
+
+		// Setup/interactive command ran successfully!
+		// If it's a shell command typo correction (KindUnknown), we've succeeded
+		event := interceptor.Intercept(m.currentResult)
+		if event != nil && event.Kind == interceptor.KindUnknown {
+			m.Success = true
+			m.state = stateSuccess
+			return m, tea.Quit
+		}
+
+		// Otherwise, for compiler errors, re-execute the original command to verify it builds now
+		m.state = stateApplying
+		return m, tea.Batch(
+			m.spinner.Tick,
+			func() tea.Msg {
+				newResult, err := executor.Run(m.cmd, m.args)
+				if err != nil {
+					return runErrorMsg{err: fmt.Errorf("failed to re-execute command: %w", err)}
+				}
+				return runSuccessMsg{result: newResult}
+			},
+		)
 
 	case llmErrorMsg:
 		m.err = msg.err
@@ -401,6 +439,10 @@ type sandboxFinishedMsg struct {
 	err    error
 }
 
+type setupCommandFinishedMsg struct {
+	err error
+}
+
 func (m *Model) runSandboxVerification(kind interceptor.FailureKind) tea.Cmd {
 	return func() tea.Msg {
 		res, err := sandbox.VerifyFix(m.cmd, m.args, kind, m.fix)
@@ -430,23 +472,16 @@ func (m *Model) askLLM() tea.Cmd {
 
 func (m *Model) applyAndReRun() tea.Cmd {
 	return func() tea.Msg {
-		if m.fix.IsCommand {
-			shellCmd := exec.Command("/bin/sh", "-c", m.fix.Command)
-			if err := shellCmd.Run(); err != nil {
-				return runErrorMsg{err: fmt.Errorf("command execution failed: %w", err)}
+		// safety backups
+		for _, p := range m.fix.Patches {
+			if err := m.backupFile(p.FilePath); err != nil {
+				return runErrorMsg{err: fmt.Errorf("safety backup failed for %s: %w", p.FilePath, err)}
 			}
-		} else {
-			// safety backups
-			for _, p := range m.fix.Patches {
-				if err := m.backupFile(p.FilePath); err != nil {
-					return runErrorMsg{err: fmt.Errorf("safety backup failed for %s: %w", p.FilePath, err)}
-				}
-			}
-			// apply patches
-			for _, p := range m.fix.Patches {
-				if err := patcher.Apply(p.FilePath, p.SearchBlock, p.ReplaceBlock); err != nil {
-					return runErrorMsg{err: fmt.Errorf("failed to apply patch to %s: %w", p.FilePath, err)}
-				}
+		}
+		// apply patches
+		for _, p := range m.fix.Patches {
+			if err := patcher.Apply(p.FilePath, p.SearchBlock, p.ReplaceBlock); err != nil {
+				return runErrorMsg{err: fmt.Errorf("failed to apply patch to %s: %w", p.FilePath, err)}
 			}
 		}
 
