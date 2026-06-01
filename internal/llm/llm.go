@@ -132,7 +132,7 @@ type geminiResponse struct {
 }
 
 func callGemini(ctx context.Context, apiKey, prompt string) (*Fix, error) {
-	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey
+	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey
 
 	// Define our strict JSON response schema
 	schema := &geminiSchema{
